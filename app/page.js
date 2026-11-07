@@ -3,8 +3,29 @@ import { useEffect, useRef, useState } from "react";
 import { io } from "socket.io-client";
 
 const API = process.env.NEXT_PUBLIC_API_URL;
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 const SLOTS = ["cam1", "cam2"], STALE_MS = 4000;
 const blank = () => Object.fromEntries(SLOTS.map((s) => [s, { online: false, fire: false, name: "", prob: 0 }]));
+
+async function loadSupabaseShots() {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/detections?select=*&order=created_at.desc&limit=48`, {
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      "Content-Type": "application/json",
+    },
+  });
+
+  if (!res.ok) {
+    const payload = await res.text();
+    throw new Error(payload || "Gagal memuat riwayat dari Supabase");
+  }
+
+  return res.json();
+}
 
 function CamCard({ slot, cam, lastFrame, imgRef }) {
   const live = cam.online && Date.now() - lastFrame < STALE_MS;
@@ -65,10 +86,28 @@ export default function Dashboard() {
     });
 
     const tick = setInterval(() => setTick((n) => n + 1), 1000);   // evaluasi "menunggu video"
-    fetch(`${API}/api/detections?limit=48`, { headers: { "X-Access-Key": key } })
-      .then(async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d.error); return d; })
-      .then((d) => { setShots(d.items); setHistMsg(d.error || ""); })
-      .catch((e) => setHistMsg("Gagal memuat riwayat: " + e.message));
+
+    const loadInitialShots = async () => {
+      try {
+        const supabaseShots = await loadSupabaseShots();
+        console.log(supabaseShots);
+
+        if (Array.isArray(supabaseShots) && supabaseShots.length) {
+          setShots(supabaseShots);
+          setHistMsg("");
+          return;
+        }
+      } catch (e) {
+        setHistMsg("Gagal memuat riwayat dari Supabase: " + e.message);
+      }
+
+      fetch(`${API}/api/detections?limit=48`, { headers: { "X-Access-Key": key } })
+        .then(async (r) => { const d = await r.json(); if (!r.ok) throw new Error(d.error || "Gagal memuat riwayat"); return d; })
+        .then((d) => { setShots(d.items || []); setHistMsg(d.error || ""); })
+        .catch((e) => setHistMsg((prev) => prev || "Gagal memuat riwayat: " + e.message));
+    };
+
+    loadInitialShots();
 
     return () => { socket.disconnect(); clearInterval(tick); clearTimeout(toastTimer.current); };
   }, []);
